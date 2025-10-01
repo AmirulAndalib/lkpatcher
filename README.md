@@ -37,6 +37,7 @@ python3 -m lkpatcher [-h] [options] bootloader_image
 -l, --list-partitions       List all partitions in the bootloader image
 -d, --dump-partition NAME   Dump partition with NAME to a file
 -i, --partition-info NAME   Display detailed information about partition NAME
+--analyze-policies          Analyze security policies in the LK partition
 --dry-run                   Perform a dry run without writing changes
 --export-config FILE        Export default configuration to FILE and exit
 ```
@@ -45,6 +46,7 @@ python3 -m lkpatcher [-h] [options] bootloader_image
 ```
 --category CATEGORY         Patch category to apply (can be used multiple times)
 --exclude CATEGORY          Patch category to exclude (can be used multiple times)
+--patch-policies            Patch security policies to disable verification
 ```
 
 #### Backup Options:
@@ -88,6 +90,9 @@ python3 -m lkpatcher lk.img --category fastboot --category dm_verity
 
 # Export default configuration
 python3 -m lkpatcher --export-config config.json
+
+# Analyze security policies
+python3 -m lkpatcher lk.img --analyze-policies
 ```
 
 ## Using as a Library

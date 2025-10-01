@@ -23,6 +23,7 @@ from lkpatcher.exceptions import (
     NoNeedlesFound,
     PatchValidationError,
 )
+from lkpatcher.policy import patch_lk_security_policies
 
 
 class PatchManager:
@@ -257,15 +258,49 @@ class LkPatcher:
         if load_image:
             self.image = LkImage(image)
             self.logger.info(
-                'Loaded image from %s with %d partitions',
+                'Loaded image from %s with %d partitions (version %d)',
                 image,
                 len(self.image.partitions),
+                self.image.version,
             )
         else:
-            # Useful for operations that don't need the image
             self.image = cast(LkImage, None)
 
-    def patch(self, output: Union[str, Path]) -> Path:
+    def _rebuild_image_contents(self) -> None:
+        """
+        Rebuild the main image contents from modified partitions.
+        This ensures that partition-level changes are reflected in the main image.
+        """
+        new_contents = bytearray()
+        partition_names = list(self.image.partitions.keys())
+
+        for i, (name, partition) in enumerate(self.image.partitions.items()):
+            partition.header.image_list_end = (
+                1 if i == len(partition_names) - 1 else 0
+            )
+            partition.end_offset = (
+                len(new_contents)
+                + partition.header.size
+                + partition.header.data_size
+            )
+
+            alignment = (
+                partition.header.alignment
+                if partition.header.is_extended
+                else 8
+            )
+            if alignment and partition.end_offset % alignment:
+                partition.end_offset += alignment - (
+                    partition.end_offset % alignment
+                )
+
+            new_contents.extend(bytes(partition))
+
+        self.image.contents = new_contents
+
+    def patch(
+        self, output: Union[str, Path], patch_policies: bool = False
+    ) -> Path:
         """
         Patch the bootloader image.
 
@@ -274,6 +309,7 @@ class LkPatcher:
 
         Args:
             output: Path where the patched image will be saved
+            patch_policies: Whether to patch security policies
 
         Returns:
             Path to the saved patched image
@@ -284,7 +320,7 @@ class LkPatcher:
         """
         applicable_patches = self.patch_manager.get_applicable_patches()
 
-        if not applicable_patches:
+        if not applicable_patches and not patch_policies:
             self.logger.warning(
                 'No applicable patches based on current configuration'
             )
@@ -343,10 +379,50 @@ class LkPatcher:
                     skipped_count += 1
                     self.logger.debug('Needle not found: %s', needle)
 
+        if patch_policies:
+            lk_partition = self.image.partitions.get('lk')
+            if lk_partition:
+                if self.config.dry_run:
+                    self.logger.info('DRY RUN: Would patch security policies')
+                    results['security_policies'] = {'policy_patch': True}
+                    applied_count += 1
+                else:
+                    try:
+                        policy_patched = patch_lk_security_policies(
+                            lk_partition
+                        )
+                        if policy_patched:
+                            self.logger.info(
+                                'Successfully patched security policies'
+                            )
+                            self._rebuild_image_contents()
+                            results['security_policies'] = {
+                                'policy_patch': True
+                            }
+                            applied_count += 1
+                        else:
+                            self.logger.warning(
+                                'No security policies were patched'
+                            )
+                            results['security_policies'] = {
+                                'policy_patch': False
+                            }
+                            skipped_count += 1
+                    except Exception as e:
+                        self.logger.error(
+                            'Failed to patch security policies: %s', e
+                        )
+                        results['security_policies'] = {'policy_patch': False}
+                        skipped_count += 1
+            else:
+                self.logger.warning(
+                    'LK partition not found for policy patching'
+                )
+
         self.logger.info(
             'Patching summary: %d/%d patches applied, %d skipped',
             applied_count,
-            total_patches,
+            total_patches + (1 if patch_policies else 0),
             skipped_count,
         )
 
@@ -390,10 +466,13 @@ class LkPatcher:
                 report = {
                     'timestamp': timestamp,
                     'image': str(self.image.path),
-                    'total_patches': total_patches,
+                    'image_version': self.image.version,
+                    'total_patches': total_patches
+                    + (1 if patch_policies else 0),
                     'applied_patches': applied_count,
                     'skipped_patches': skipped_count,
                     'dry_run': self.config.dry_run,
+                    'security_policies_patched': patch_policies,
                     'results': results,
                 }
                 json.dump(report, fp, indent=4)
@@ -515,6 +594,7 @@ class LkPatcher:
             'image_path': str(self.image.path)
             if self.image.path
             else 'Unknown',
+            'image_version': self.image.version,
             'image_size': total_size,
             'partition_count': len(self.image.partitions),
             'partitions': partition_info,

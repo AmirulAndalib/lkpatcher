@@ -28,6 +28,7 @@ from lkpatcher.exceptions import (
     LkPatcherError,
 )
 from lkpatcher.patcher import LkPatcher
+from lkpatcher.policy import analyze_lk_security_policies
 
 
 def setup_logging(log_level: LogLevel, log_file: Optional[Path] = None) -> None:
@@ -104,6 +105,45 @@ def list_partitions(patcher: LkPatcher) -> None:
     print('-' * 40)
 
 
+def analyze_security_policies(patcher: LkPatcher) -> None:
+    """
+    Analyze security policies in the LK partition.
+
+    Args:
+        patcher: LkPatcher instance
+    """
+    lk_partition = patcher.image.partitions.get('lk')
+    if not lk_partition:
+        print('Error: No LK partition found in image.')
+        return
+
+    try:
+        results = analyze_lk_security_policies(lk_partition)
+
+        if 'warning' in results:
+            print(f'Warning: {results["warning"]}')
+
+        if results['policy_table_found']:
+            print(f'Policy Table Offset: {results["policy_table_offset"]}')
+            print('Security Policies:')
+            print('-' * 50)
+            print(
+                'Policy Name      nosbc+lock  nosbc+unlock  sbc+lock  sbc+unlock'
+            )
+            print('-' * 50)
+            for policy in results['policies']:
+                print(
+                    f'{policy["name"]:<12}: {policy["nosbc_lock"]:<10} {policy["nosbc_unlock"]:<12} {policy["sbc_lock"]:<8} {policy["sbc_unlock"]}'
+                )
+        else:
+            print('No security policy table found.')
+
+        print('=' * 50)
+
+    except Exception as e:
+        print(f'Error analyzing security policies: {e}')
+
+
 def export_config(patcher: LkPatcher, output_path: Path) -> None:
     """
     Export default configuration to a file.
@@ -170,6 +210,7 @@ def main() -> int:
         '  %(prog)s lk.img -c mypatches.json     # Use custom config\n'
         '  %(prog)s lk.img --list-partitions     # List image partitions\n'
         "  %(prog)s lk.img -d lk                 # Dump 'lk' partition\n"
+        '  %(prog)s lk.img --analyze-policies    # Analyze security policies\n'
         '  %(prog)s --export-config config.json  # Export default config',
     )
 
@@ -224,6 +265,11 @@ def main() -> int:
         help='Display detailed information about partition NAME',
     )
     group.add_argument(
+        '--analyze-policies',
+        action='store_true',
+        help='Analyze security policies in the LK partition',
+    )
+    group.add_argument(
         '--dry-run',
         action='store_true',
         help='Perform a dry run without writing changes',
@@ -241,6 +287,11 @@ def main() -> int:
         action='append',
         dest='exclude_categories',
         help='Patch category to exclude (can be used multiple times)',
+    )
+    patch_group.add_argument(
+        '--patch-policies',
+        action='store_true',
+        help='Patch security policies to disable verification',
     )
 
     backup_group = parser.add_argument_group('Backup Options')
@@ -292,6 +343,7 @@ def main() -> int:
                 args.list_partitions,
                 args.dump_partition,
                 args.partition_info,
+                args.analyze_policies,
                 args.output,
             ]
         ):
@@ -336,6 +388,10 @@ def main() -> int:
             list_partitions(patcher)
             return 0
 
+        if args.analyze_policies:
+            analyze_security_policies(patcher)
+            return 0
+
         if args.partition_info:
             partition = patcher.image.partitions.get(args.partition_info)
             if partition:
@@ -363,7 +419,9 @@ def main() -> int:
             )
             logger.info('Created backup at %s', backup_path)
 
-        patched_path = patcher.patch(output_path)
+        patched_path = patcher.patch(
+            output_path, patch_policies=args.patch_policies
+        )
         logger.info('Patched image saved to %s', patched_path)
 
         return 0
