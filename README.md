@@ -49,6 +49,16 @@ python3 -m lkpatcher [-h] [options] bootloader_image
 --patch-policies            Patch security policies to disable verification
 ```
 
+#### Partition Management:
+```
+--add-partition NAME FILE   Add new partition with NAME from FILE
+--remove-partition NAME     Remove partition with NAME  
+--add-certificate PART FILE Add certificate from FILE to partition PART
+--partition-address ADDR    Memory address for new partition (hex or decimal)
+--partition-legacy          Use legacy header format for new partitions
+--cert-type TYPE            Certificate type for --add-certificate (cert1, cert2)
+```
+
 #### Backup Options:
 ```
 --backup                    Create a backup before patching
@@ -93,6 +103,15 @@ python3 -m lkpatcher --export-config config.json
 
 # Analyze security policies
 python3 -m lkpatcher lk.img --analyze-policies
+
+# Add a new partition
+python3 -m lkpatcher lk.img --add-partition custom data.bin --partition-address 0x41000000
+
+# Remove an existing partition
+python3 -m lkpatcher lk.img --remove-partition unwanted
+
+# Add certificate to a partition
+python3 -m lkpatcher lk.img --add-certificate lk cert1.der --cert-type cert1
 ```
 
 ## Using as a Library

@@ -193,6 +193,95 @@ def display_partition_info(partition: LkPartition) -> None:
     print('=' * 60)
 
 
+def add_partition_to_image(
+    patcher: LkPatcher,
+    partition_name: str,
+    data_file: Path,
+    memory_address: int = 0,
+    use_extended: bool = True,
+) -> None:
+    """
+    Add a new partition to the LK image.
+
+    Args:
+        patcher: LkPatcher instance
+        partition_name: Name for the new partition
+        data_file: Path to file containing partition data
+        memory_address: Load address for the partition
+        use_extended: Use extended header format
+    """
+    if not data_file.exists():
+        raise InvalidIOFile(f'Data file not found: {data_file}', data_file)
+
+    with open(data_file, 'rb') as f:
+        partition_data = f.read()
+
+    patcher.image.add_partition(
+        name=partition_name,
+        data=partition_data,
+        memory_address=memory_address,
+        use_extended=use_extended,
+    )
+
+    print(f'Added partition: {partition_name} ({len(partition_data)} bytes)')
+
+
+def remove_partition_from_image(
+    patcher: LkPatcher, partition_name: str
+) -> None:
+    """
+    Remove a partition from the LK image.
+
+    Args:
+        patcher: LkPatcher instance
+        partition_name: Name of partition to remove
+    """
+    if partition_name not in patcher.image.partitions:
+        print(f'Error: Partition not found: {partition_name}')
+        list_partitions(patcher)
+        return
+
+    patcher.image.remove_partition(partition_name)
+    print(f'Removed partition: {partition_name}')
+
+
+def add_certificate_to_partition(
+    patcher: LkPatcher,
+    partition_name: str,
+    cert_file: Path,
+    cert_type: str = 'cert1',
+) -> None:
+    """
+    Add a certificate to a partition.
+
+    Args:
+        patcher: LkPatcher instance
+        partition_name: Name of target partition
+        cert_file: Path to certificate file
+        cert_type: Certificate type ('cert1' or 'cert2')
+    """
+    if not cert_file.exists():
+        raise InvalidIOFile(
+            f'Certificate file not found: {cert_file}', cert_file
+        )
+
+    if partition_name not in patcher.image.partitions:
+        print(f'Error: Partition not found: {partition_name}')
+        list_partitions(patcher)
+        return
+
+    with open(cert_file, 'rb') as f:
+        cert_data = f.read()
+
+    partition = patcher.image.partitions[partition_name]
+    partition.add_certificate(cert_data, cert_type)
+    patcher.image._rebuild_contents()
+
+    print(
+        f'Added {cert_type} to partition {partition_name} ({len(cert_data)} bytes)'
+    )
+
+
 def main() -> int:
     """
     Main entry point for the LK patcher application.
@@ -211,7 +300,9 @@ def main() -> int:
         '  %(prog)s lk.img --list-partitions     # List image partitions\n'
         "  %(prog)s lk.img -d lk                 # Dump 'lk' partition\n"
         '  %(prog)s lk.img --analyze-policies    # Analyze security policies\n'
-        '  %(prog)s --export-config config.json  # Export default config',
+        '  %(prog)s --export-config config.json  # Export default config\n'
+        '  %(prog)s lk.img --add-partition custom data.bin  # Add partition\n'
+        '  %(prog)s lk.img --remove-partition unwanted      # Remove partition',
     )
 
     parser.add_argument(
@@ -273,6 +364,42 @@ def main() -> int:
         '--dry-run',
         action='store_true',
         help='Perform a dry run without writing changes',
+    )
+
+    partition_group = parser.add_argument_group('Partition Management')
+    partition_group.add_argument(
+        '--add-partition',
+        nargs=2,
+        metavar=('NAME', 'DATA_FILE'),
+        help='Add new partition with NAME from DATA_FILE',
+    )
+    partition_group.add_argument(
+        '--remove-partition',
+        metavar='NAME',
+        help='Remove partition with NAME',
+    )
+    partition_group.add_argument(
+        '--add-certificate',
+        nargs=2,
+        metavar=('PARTITION', 'CERT_FILE'),
+        help='Add certificate from CERT_FILE to PARTITION',
+    )
+    partition_group.add_argument(
+        '--partition-address',
+        type=lambda x: int(x, 0),
+        default=0,
+        help='Memory address for new partition (hex or decimal)',
+    )
+    partition_group.add_argument(
+        '--partition-legacy',
+        action='store_true',
+        help='Use legacy header format for new partitions',
+    )
+    partition_group.add_argument(
+        '--cert-type',
+        choices=['cert1', 'cert2'],
+        default='cert1',
+        help='Certificate type for --add-certificate (default: cert1)',
     )
 
     patch_group = parser.add_argument_group('Patch Control')
@@ -344,6 +471,9 @@ def main() -> int:
                 args.dump_partition,
                 args.partition_info,
                 args.analyze_policies,
+                args.add_partition,
+                args.remove_partition,
+                args.add_certificate,
                 args.output,
             ]
         ):
@@ -384,6 +514,8 @@ def main() -> int:
             args.bootloader_image, args.json_patches, config=config
         )
 
+        partition_modified = False
+
         if args.list_partitions:
             list_partitions(patcher)
             return 0
@@ -406,11 +538,34 @@ def main() -> int:
             result = patcher.dump_partition(args.dump_partition)
             return 0 if result else 1
 
+        if args.add_partition:
+            partition_name, data_file = args.add_partition
+            add_partition_to_image(
+                patcher,
+                partition_name,
+                Path(data_file),
+                args.partition_address,
+                not args.partition_legacy,
+            )
+            partition_modified = True
+
+        if args.remove_partition:
+            remove_partition_from_image(patcher, args.remove_partition)
+            partition_modified = True
+
+        if args.add_certificate:
+            partition_name, cert_file = args.add_certificate
+            add_certificate_to_partition(
+                patcher, partition_name, Path(cert_file), args.cert_type
+            )
+            partition_modified = True
+
         if args.output:
             output_path = args.output
         else:
+            suffix = '-modified' if partition_modified else '-patched'
             output_path = args.bootloader_image.with_stem(
-                f'{args.bootloader_image.stem}-patched'
+                f'{args.bootloader_image.stem}{suffix}'
             )
 
         if config.backup and not config.dry_run:
@@ -419,10 +574,19 @@ def main() -> int:
             )
             logger.info('Created backup at %s', backup_path)
 
-        patched_path = patcher.patch(
-            output_path, patch_policies=args.patch_policies
-        )
-        logger.info('Patched image saved to %s', patched_path)
+        if partition_modified:
+            if not config.dry_run:
+                patcher.image.save(output_path)
+                logger.info('Modified image saved to %s', output_path)
+            else:
+                logger.info(
+                    'Dry run: would save modified image to %s', output_path
+                )
+        else:
+            patched_path = patcher.patch(
+                output_path, patch_policies=args.patch_policies
+            )
+            logger.info('Patched image saved to %s', patched_path)
 
         return 0
 
